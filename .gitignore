@@ -5,5 +5,4 @@ config.toml
 data/
 web/node_modules/
 web/dist/
-ideas.md
 plan.md
