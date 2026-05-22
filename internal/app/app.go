@@ -35,15 +35,29 @@ type App struct {
 	mu sync.RWMutex
 }
 
-// New 创建应用运行时。
+// New 创建应用运行时。当 workspace 为空且没有最近 workspace 时，App 进入“无书籍”状态，
+// 等待用户在前端书籍管理页选择或新建书籍后再构建 runtime。
 func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	registry := NewBookRegistry(cfg.NovaDir)
 	bookMetaStore := NewBookMetaStore(cfg.NovaDir)
 	workspace := cfg.Workspace
-	if cfg.ResumeLastWorkspace {
+	if workspace == "" && cfg.ResumeLastWorkspace {
 		if lastWorkspace := registry.Current(); lastWorkspace != "" {
 			workspace = lastWorkspace
 		}
+	}
+
+	app := &App{
+		cfg:           cfg,
+		chatService:   agent.NewChatService(),
+		bookRegistry:  registry,
+		bookMetaStore: bookMetaStore,
+	}
+
+	if workspace == "" {
+		log.Printf("[app] 启动时未指定 workspace 且无最近书籍，进入无书籍状态，等待用户在前端选择")
+		cfg.Workspace = ""
+		return app, nil
 	}
 
 	runtime, err := buildRuntime(ctx, cfg, workspace)
@@ -53,19 +67,24 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	cfg.Workspace = runtime.workspace
 	_ = registry.Touch(runtime.workspace)
 
-	return &App{
-		cfg:           cfg,
-		workspace:     runtime.workspace,
-		bookState:     runtime.bookState,
-		bookService:   runtime.bookService,
-		sessionStore:  runtime.sessionStore,
-		session:       runtime.session,
-		agentRunner:   runtime.agentRunner,
-		chatService:   agent.NewChatService(),
-		bookRegistry:  registry,
-		bookMetaStore: bookMetaStore,
-		gitService:    runtime.gitService,
-	}, nil
+	app.workspace = runtime.workspace
+	app.bookState = runtime.bookState
+	app.bookService = runtime.bookService
+	app.sessionStore = runtime.sessionStore
+	app.session = runtime.session
+	app.agentRunner = runtime.agentRunner
+	app.gitService = runtime.gitService
+	return app, nil
+}
+
+// ErrNoWorkspace 表示当前 App 尚未绑定任何书籍 workspace。
+var ErrNoWorkspace = fmt.Errorf("尚未选择书籍工作区")
+
+// HasWorkspace 返回是否已绑定 workspace。
+func (a *App) HasWorkspace() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.workspace != ""
 }
 
 // Workspace 返回当前 workspace。
@@ -477,7 +496,50 @@ func (a *App) Status() (bool, string) {
 	a.mu.RLock()
 	state := a.bookState
 	a.mu.RUnlock()
+	if state == nil {
+		return false, ""
+	}
 	return state.HasState(), state.CompactContext()
+}
+
+// Settings 返回当前生效的分层配置快照。
+func (a *App) Settings() (config.LayeredSettings, error) {
+	a.mu.RLock()
+	workspace := a.workspace
+	novaDir := ""
+	if a.cfg != nil {
+		novaDir = a.cfg.NovaDir
+	}
+	a.mu.RUnlock()
+	return config.LoadLayered(novaDir, workspace)
+}
+
+// UpdateUserSettings 持久化用户级配置并返回最新分层快照。
+func (a *App) UpdateUserSettings(s config.Settings) (config.LayeredSettings, error) {
+	a.mu.RLock()
+	novaDir := ""
+	if a.cfg != nil {
+		novaDir = a.cfg.NovaDir
+	}
+	a.mu.RUnlock()
+	if err := config.WriteSettingsFile(config.UserConfigPath(novaDir), s); err != nil {
+		return config.LayeredSettings{}, err
+	}
+	return a.Settings()
+}
+
+// UpdateWorkspaceSettings 持久化当前工作区配置并返回最新分层快照。
+func (a *App) UpdateWorkspaceSettings(s config.Settings) (config.LayeredSettings, error) {
+	a.mu.RLock()
+	workspace := a.workspace
+	a.mu.RUnlock()
+	if workspace == "" {
+		return config.LayeredSettings{}, fmt.Errorf("当前没有打开的工作区")
+	}
+	if err := config.WriteSettingsFile(config.WorkspaceConfigPath(workspace), s); err != nil {
+		return config.LayeredSettings{}, err
+	}
+	return a.Settings()
 }
 
 type runtimeState struct {
