@@ -14,6 +14,7 @@ import (
 	"nova/config"
 	"nova/internal/agent"
 	"nova/internal/book"
+	"nova/internal/interactive"
 	"nova/internal/session"
 )
 
@@ -24,6 +25,7 @@ type App struct {
 	workspace     string
 	bookState     *book.State
 	bookService   *book.Service
+	interactive   *interactive.Store
 	sessionStore  *session.Store
 	session       *session.Session
 	agentRunner   *adk.Runner
@@ -71,6 +73,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	app.workspace = runtime.workspace
 	app.bookState = runtime.bookState
 	app.bookService = runtime.bookService
+	app.interactive = runtime.interactive
 	app.sessionStore = runtime.sessionStore
 	app.session = runtime.session
 	app.agentRunner = runtime.agentRunner
@@ -107,6 +110,50 @@ func (a *App) BookService() *book.Service {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.bookService
+}
+
+func (a *App) InteractiveStories() (interactive.Index, error) {
+	a.mu.RLock()
+	store := a.interactive
+	a.mu.RUnlock()
+	if store == nil {
+		return interactive.Index{}, ErrNoWorkspace
+	}
+	return store.Index()
+}
+
+func (a *App) CreateInteractiveStory(req interactive.CreateStoryRequest) (interactive.StorySummary, error) {
+	a.mu.RLock()
+	store := a.interactive
+	a.mu.RUnlock()
+	if store == nil {
+		return interactive.StorySummary{}, ErrNoWorkspace
+	}
+	return store.CreateStory(req)
+}
+
+func (a *App) InteractiveSnapshot(storyID, branchID string) (interactive.Snapshot, error) {
+	a.mu.RLock()
+	store := a.interactive
+	a.mu.RUnlock()
+	if store == nil {
+		return interactive.Snapshot{}, ErrNoWorkspace
+	}
+	return store.Snapshot(storyID, branchID)
+}
+
+func (a *App) InteractiveTellers() ([]interactive.Teller, error) {
+	if a.cfg == nil || a.cfg.NovaDir == "" {
+		return nil, ErrNoWorkspace
+	}
+	return interactive.NewTellerLibrary(a.cfg.NovaDir).List()
+}
+
+func (a *App) InteractiveTeller(id string) (interactive.Teller, error) {
+	if a.cfg == nil || a.cfg.NovaDir == "" {
+		return interactive.Teller{}, ErrNoWorkspace
+	}
+	return interactive.NewTellerLibrary(a.cfg.NovaDir).Get(id)
 }
 
 // Session 返回当前会话。
@@ -149,6 +196,7 @@ func (a *App) SwitchWorkspace(ctx context.Context, path string) (string, error) 
 	a.workspace = runtime.workspace
 	a.bookState = runtime.bookState
 	a.bookService = runtime.bookService
+	a.interactive = runtime.interactive
 	a.sessionStore = runtime.sessionStore
 	a.session = runtime.session
 	a.agentRunner = runtime.agentRunner
@@ -643,6 +691,7 @@ type runtimeState struct {
 	workspace    string
 	bookState    *book.State
 	bookService  *book.Service
+	interactive  *interactive.Store
 	sessionStore *session.Store
 	session      *session.Session
 	agentRunner  *adk.Runner
@@ -680,6 +729,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, workspace string) (*r
 		workspace:    absWorkspace,
 		bookState:    state,
 		bookService:  book.NewService(absWorkspace),
+		interactive:  interactive.NewStore(absWorkspace),
 		sessionStore: store,
 		session:      sess,
 		agentRunner:  agent.NewRunner(ctx, builtAgent),

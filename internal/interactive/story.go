@@ -1,0 +1,524 @@
+package interactive
+
+import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const schemaVersion = 1
+
+// Store manages interactive story data inside a workspace.
+type Store struct {
+	root string
+	mu   sync.Mutex
+}
+
+// NewStore creates an interactive store rooted at the workspace directory.
+func NewStore(root string) *Store {
+	return &Store{root: root}
+}
+
+// Root returns the workspace root.
+func (s *Store) Root() string {
+	return s.root
+}
+
+type CreateStoryRequest struct {
+	Title         string
+	Origin        string
+	StoryTellerID string
+}
+
+type AppendTurnRequest struct {
+	BranchID  string
+	User      string
+	Narrative string
+}
+
+type AppendStateDeltaRequest struct {
+	ParentID string
+	BranchID string
+	Ops      []StateOp
+}
+
+type Index struct {
+	CurrentStoryID string         `json:"current_story_id"`
+	Stories        []StorySummary `json:"stories"`
+}
+
+type StorySummary struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Origin        string `json:"origin"`
+	StoryTellerID string `json:"story_teller_id"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+	Branches      int    `json:"branches"`
+	Events        int    `json:"events"`
+}
+
+type BranchMeta struct {
+	Head      string `json:"head"`
+	CreatedAt string `json:"created_at"`
+	From      string `json:"from,omitempty"`
+	FromEvent string `json:"from_event,omitempty"`
+	Title     string `json:"title,omitempty"`
+}
+
+type StoryMeta struct {
+	V             int                   `json:"v"`
+	Type          string                `json:"type"`
+	StoryID       string                `json:"story_id"`
+	Title         string                `json:"title"`
+	Origin        string                `json:"origin"`
+	StoryTellerID string                `json:"story_teller_id"`
+	CurrentBranch string                `json:"current_branch"`
+	Branches      map[string]BranchMeta `json:"branches"`
+	CreatedAt     string                `json:"created_at"`
+	UpdatedAt     string                `json:"updated_at"`
+}
+
+type TurnEvent struct {
+	V         int             `json:"v"`
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	ParentID  any             `json:"parent_id"`
+	BranchID  string          `json:"branch_id"`
+	Ts        string          `json:"ts"`
+	User      string          `json:"user"`
+	Narrative string          `json:"narrative"`
+	Alts      []TurnAlt       `json:"alts,omitempty"`
+	AltIdx    int             `json:"alt_idx"`
+	Flags     map[string]bool `json:"flags,omitempty"`
+}
+
+type TurnAlt struct {
+	Narrative string `json:"narrative"`
+	Ts        string `json:"ts"`
+}
+
+type StateDeltaEvent struct {
+	V        int       `json:"v"`
+	Type     string    `json:"type"`
+	ID       string    `json:"id"`
+	ParentID string    `json:"parent_id"`
+	BranchID string    `json:"branch_id"`
+	Ts       string    `json:"ts"`
+	Ops      []StateOp `json:"ops"`
+}
+
+type StateOp struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value any    `json:"value,omitempty"`
+}
+
+type Snapshot struct {
+	StoryID  string         `json:"story_id"`
+	BranchID string         `json:"branch_id"`
+	Turns    []TurnEvent    `json:"turns"`
+	State    map[string]any `json:"state"`
+}
+
+func (s *Store) Index() (Index, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readIndexLocked()
+}
+
+func (s *Store) CreateStory(req CreateStoryRequest) (StorySummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := os.MkdirAll(s.storyDir(), 0o755); err != nil {
+		return StorySummary{}, fmt.Errorf("创建互动故事目录失败: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	story := StorySummary{
+		ID:            newID("st"),
+		Title:         strings.TrimSpace(req.Title),
+		Origin:        strings.TrimSpace(req.Origin),
+		StoryTellerID: strings.TrimSpace(req.StoryTellerID),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Branches:      1,
+	}
+	if story.Title == "" {
+		return StorySummary{}, fmt.Errorf("故事标题不能为空")
+	}
+	if story.StoryTellerID == "" {
+		story.StoryTellerID = "classic"
+	}
+
+	meta := StoryMeta{
+		V:             schemaVersion,
+		Type:          "meta",
+		StoryID:       story.ID,
+		Title:         story.Title,
+		Origin:        story.Origin,
+		StoryTellerID: story.StoryTellerID,
+		CurrentBranch: "main",
+		Branches: map[string]BranchMeta{
+			"main": {CreatedAt: now},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := writeJSONL(s.storyPath(story.ID), []any{meta}); err != nil {
+		return StorySummary{}, err
+	}
+
+	index, err := s.readIndexLocked()
+	if err != nil {
+		return StorySummary{}, err
+	}
+	index.CurrentStoryID = story.ID
+	index.Stories = append(index.Stories, story)
+	if err := s.writeIndexLocked(index); err != nil {
+		return StorySummary{}, err
+	}
+	return story, nil
+}
+
+func (s *Store) AppendTurn(storyID string, req AppendTurnRequest) (TurnEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, lines, err := s.readStoryLocked(storyID)
+	if err != nil {
+		return TurnEvent{}, err
+	}
+	branchID := req.BranchID
+	if branchID == "" {
+		branchID = meta.CurrentBranch
+	}
+	branch, ok := meta.Branches[branchID]
+	if !ok {
+		return TurnEvent{}, fmt.Errorf("分支不存在: %s", branchID)
+	}
+	parentID := any(nil)
+	if branch.Head != "" {
+		parentID = branch.Head
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	event := TurnEvent{
+		V:         schemaVersion,
+		Type:      "turn",
+		ID:        newID("ev"),
+		ParentID:  parentID,
+		BranchID:  branchID,
+		Ts:        now,
+		User:      req.User,
+		Narrative: req.Narrative,
+		Alts:      []TurnAlt{{Narrative: req.Narrative, Ts: now}},
+		Flags:     map[string]bool{"pinned": false, "locked": false},
+	}
+	branch.Head = event.ID
+	meta.Branches[branchID] = branch
+	meta.UpdatedAt = now
+	if err := s.rewriteStoryLocked(storyID, meta, lines, event); err != nil {
+		return TurnEvent{}, err
+	}
+	if err := s.touchIndexLocked(storyID, now, 1); err != nil {
+		return TurnEvent{}, err
+	}
+	return event, nil
+}
+
+func (s *Store) AppendStateDelta(storyID string, req AppendStateDeltaRequest) (StateDeltaEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, lines, err := s.readStoryLocked(storyID)
+	if err != nil {
+		return StateDeltaEvent{}, err
+	}
+	branchID := req.BranchID
+	if branchID == "" {
+		branchID = meta.CurrentBranch
+	}
+	branch, ok := meta.Branches[branchID]
+	if !ok {
+		return StateDeltaEvent{}, fmt.Errorf("分支不存在: %s", branchID)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	event := StateDeltaEvent{
+		V:        schemaVersion,
+		Type:     "state_delta",
+		ID:       newID("ev"),
+		ParentID: req.ParentID,
+		BranchID: branchID,
+		Ts:       now,
+		Ops:      req.Ops,
+	}
+	branch.Head = event.ID
+	meta.Branches[branchID] = branch
+	meta.UpdatedAt = now
+	if err := s.rewriteStoryLocked(storyID, meta, lines, event); err != nil {
+		return StateDeltaEvent{}, err
+	}
+	if err := s.touchIndexLocked(storyID, now, 1); err != nil {
+		return StateDeltaEvent{}, err
+	}
+	return event, nil
+}
+
+func (s *Store) Snapshot(storyID, branchID string) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	meta, lines, err := s.readStoryLocked(storyID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if branchID == "" {
+		branchID = meta.CurrentBranch
+	}
+	state := map[string]any{
+		"on_stage":   []any{},
+		"characters": map[string]any{},
+		"events":     []any{},
+	}
+	snapshot := Snapshot{StoryID: storyID, BranchID: branchID, State: state}
+	for _, raw := range lines {
+		eventType, _ := raw["type"].(string)
+		eventBranch, _ := raw["branch_id"].(string)
+		if eventBranch != branchID {
+			continue
+		}
+		switch eventType {
+		case "turn":
+			var turn TurnEvent
+			if err := mapToStruct(raw, &turn); err != nil {
+				return Snapshot{}, err
+			}
+			snapshot.Turns = append(snapshot.Turns, turn)
+		case "state_delta":
+			var delta StateDeltaEvent
+			if err := mapToStruct(raw, &delta); err != nil {
+				return Snapshot{}, err
+			}
+			for _, op := range delta.Ops {
+				applyStateOp(state, op)
+			}
+		}
+	}
+	return snapshot, nil
+}
+
+func (s *Store) storyDir() string {
+	return filepath.Join(s.root, "interactive", "story")
+}
+
+func (s *Store) indexPath() string {
+	return filepath.Join(s.storyDir(), "index.json")
+}
+
+func (s *Store) storyPath(storyID string) string {
+	return filepath.Join(s.storyDir(), "story-"+storyID+".jsonl")
+}
+
+func (s *Store) readIndexLocked() (Index, error) {
+	data, err := os.ReadFile(s.indexPath())
+	if os.IsNotExist(err) {
+		return Index{Stories: []StorySummary{}}, nil
+	}
+	if err != nil {
+		return Index{}, err
+	}
+	var index Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		return Index{}, fmt.Errorf("解析互动故事索引失败: %w", err)
+	}
+	return index, nil
+}
+
+func (s *Store) writeIndexLocked(index Index) error {
+	if err := os.MkdirAll(s.storyDir(), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.indexPath(), data, 0o644)
+}
+
+func (s *Store) touchIndexLocked(storyID, updatedAt string, eventDelta int) error {
+	index, err := s.readIndexLocked()
+	if err != nil {
+		return err
+	}
+	for i := range index.Stories {
+		if index.Stories[i].ID == storyID {
+			index.Stories[i].UpdatedAt = updatedAt
+			index.Stories[i].Events += eventDelta
+			return s.writeIndexLocked(index)
+		}
+	}
+	return fmt.Errorf("故事不存在: %s", storyID)
+}
+
+func (s *Store) readStoryLocked(storyID string) (StoryMeta, []map[string]any, error) {
+	file, err := os.Open(s.storyPath(storyID))
+	if err != nil {
+		return StoryMeta{}, nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		return StoryMeta{}, nil, fmt.Errorf("故事文件为空: %s", storyID)
+	}
+	var meta StoryMeta
+	if err := json.Unmarshal(scanner.Bytes(), &meta); err != nil {
+		return StoryMeta{}, nil, fmt.Errorf("解析故事元信息失败: %w", err)
+	}
+	var lines []map[string]any
+	for scanner.Scan() {
+		var raw map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+			return StoryMeta{}, nil, fmt.Errorf("解析故事事件失败: %w", err)
+		}
+		lines = append(lines, raw)
+	}
+	if err := scanner.Err(); err != nil {
+		return StoryMeta{}, nil, err
+	}
+	return meta, lines, nil
+}
+
+func (s *Store) rewriteStoryLocked(storyID string, meta StoryMeta, events []map[string]any, newEvents ...any) error {
+	lines := make([]any, 0, len(events)+len(newEvents)+1)
+	lines = append(lines, meta)
+	for _, event := range events {
+		lines = append(lines, event)
+	}
+	lines = append(lines, newEvents...)
+	return writeJSONL(s.storyPath(storyID), lines)
+}
+
+func writeJSONL(path string, lines []any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(file)
+	enc.SetEscapeHTML(false)
+	for _, line := range lines {
+		if err := enc.Encode(line); err != nil {
+			_ = file.Close()
+			return err
+		}
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func mapToStruct(raw map[string]any, out any) error {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+func applyStateOp(state map[string]any, op StateOp) {
+	switch op.Op {
+	case "set":
+		setPath(state, op.Path, op.Value)
+	case "merge":
+		current, _ := getPath(state, op.Path).(map[string]any)
+		if current == nil {
+			current = map[string]any{}
+		}
+		if value, ok := op.Value.(map[string]any); ok {
+			for k, v := range value {
+				current[k] = v
+			}
+		}
+		setPath(state, op.Path, current)
+	case "push":
+		current, _ := getPath(state, op.Path).([]any)
+		setPath(state, op.Path, append(current, op.Value))
+	case "pull":
+		current, _ := getPath(state, op.Path).([]any)
+		next := current[:0]
+		for _, item := range current {
+			if fmt.Sprint(item) != fmt.Sprint(op.Value) {
+				next = append(next, item)
+			}
+		}
+		setPath(state, op.Path, next)
+	case "inc":
+		current, _ := getPath(state, op.Path).(float64)
+		by := 1.0
+		if value, ok := op.Value.(float64); ok {
+			by = value
+		}
+		setPath(state, op.Path, current+by)
+	case "unset":
+		unsetPath(state, op.Path)
+	}
+}
+
+func getPath(root map[string]any, path string) any {
+	parts := strings.Split(path, ".")
+	var current any = root
+	for _, part := range parts {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = obj[part]
+	}
+	return current
+}
+
+func setPath(root map[string]any, path string, value any) {
+	parts := strings.Split(path, ".")
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		next, _ := current[part].(map[string]any)
+		if next == nil {
+			next = map[string]any{}
+			current[part] = next
+		}
+		current = next
+	}
+	current[parts[len(parts)-1]] = value
+}
+
+func unsetPath(root map[string]any, path string) {
+	parts := strings.Split(path, ".")
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		next, _ := current[part].(map[string]any)
+		if next == nil {
+			return
+		}
+		current = next
+	}
+	delete(current, parts[len(parts)-1])
+}
+
+func newID(prefix string) string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return prefix + "_" + strconv.FormatInt(time.Now().UnixNano(), 36) + hex.EncodeToString(b[:])
+}
