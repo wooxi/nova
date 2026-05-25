@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- 互动模式：故事舞台对话框支持 Enter 直接发送、Shift+Enter 换行，并新增生成中的中断按钮与 `/api/interactive/chat/abort` 后端中断接口
 - 互动模式：故事舞台对话内容新增随主题文字色变化的对白文字高亮，支持 `“”`、`「」` 和英文双引号 `""` 包裹的对白，历史回合与流式输出均生效
 - 后端 API：新增 `GET /api/workspace/summary`，统计当前书籍标题、章节数、全书字数以及每章标题、字数、状态和更新时间，供 WebUI 写作工作台展示进度
 

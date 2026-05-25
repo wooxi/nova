@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -132,6 +133,14 @@ func (s *Server) handleInteractiveChat(ctx context.Context, c *app.RequestContex
 		return
 	}
 	streamTask(c, task)
+}
+
+func (s *Server) handleInteractiveChatAbort(ctx context.Context, c *app.RequestContext) {
+	if task := s.app.ActiveInteractiveTask(); task != nil {
+		log.Printf("[interactive-agent-sse] abort requested task_id=%s status=%s", task.ID(), task.Status())
+	}
+	s.app.AbortInteractiveTask()
+	c.JSON(consts.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleInteractiveTellers(ctx context.Context, c *app.RequestContext) {

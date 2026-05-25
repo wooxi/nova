@@ -268,6 +268,23 @@ func (a *App) InteractiveTeller(id string) (interactive.Teller, error) {
 	return interactive.NewTellerLibrary(a.cfg.NovaDir).Get(id)
 }
 
+// ActiveInteractiveTask 返回当前互动模式活跃任务（可能为 nil）。
+func (a *App) ActiveInteractiveTask() *Task {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.activeInteractiveTask
+}
+
+// AbortInteractiveTask 终止当前互动模式活跃任务。
+func (a *App) AbortInteractiveTask() {
+	a.mu.RLock()
+	task := a.activeInteractiveTask
+	a.mu.RUnlock()
+	if task != nil {
+		task.Abort()
+	}
+}
+
 // Session 返回当前会话。
 func (a *App) Session() *session.Session {
 	a.mu.RLock()

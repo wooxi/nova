@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { StoryStage } from './StoryStage'
-import { sendInteractiveMessage } from '../api'
+import { abortInteractiveChat, sendInteractiveMessage } from '../api'
 import type { InteractiveSSEEvent } from '../types'
 
 vi.mock('../api', () => ({
+  abortInteractiveChat: vi.fn(),
   sendInteractiveMessage: vi.fn(),
 }))
 
@@ -18,6 +19,10 @@ function streamEvents(events: InteractiveSSEEvent[]): ReadableStream<Interactive
 }
 
 describe('StoryStage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('uses chat messages for interactive history and streamed agent events', async () => {
     vi.mocked(sendInteractiveMessage).mockResolvedValue(streamEvents([
       { event: 'thinking', data: JSON.stringify({ content: '先判断现场风险。' }) },
@@ -64,5 +69,46 @@ describe('StoryStage', () => {
     expect(screen.queryByText(/STATE_DELTA/)).not.toBeInTheDocument()
     expect(screen.queryByText(/on_stage/)).not.toBeInTheDocument()
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+  })
+
+  it('sends with Enter and keeps Shift+Enter for newline', async () => {
+    vi.mocked(sendInteractiveMessage).mockResolvedValue(streamEvents([{ event: 'done', data: '{}' }]))
+
+    render(
+      <StoryStage
+        storyId="st_1"
+        branchId="main"
+        snapshot={{ story_id: 'st_1', branch_id: 'main', state: {}, turns: [] }}
+        onDone={vi.fn()}
+      />,
+    )
+
+    const input = screen.getByPlaceholderText('你要做什么？')
+    fireEvent.change(input, { target: { value: '第一行' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(sendInteractiveMessage).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(sendInteractiveMessage).toHaveBeenCalledTimes(1))
+  })
+
+  it('can abort a running interactive agent output', async () => {
+    vi.mocked(sendInteractiveMessage).mockResolvedValue(new ReadableStream<InteractiveSSEEvent>())
+
+    render(
+      <StoryStage
+        storyId="st_1"
+        branchId="main"
+        snapshot={{ story_id: 'st_1', branch_id: 'main', state: {}, turns: [] }}
+        onDone={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('你要做什么？'), { target: { value: '继续探索' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await screen.findByRole('button', { name: '中断 AI 执行' })
+    fireEvent.click(screen.getByRole('button', { name: '中断 AI 执行' }))
+
+    await waitFor(() => expect(abortInteractiveChat).toHaveBeenCalledTimes(1))
   })
 })

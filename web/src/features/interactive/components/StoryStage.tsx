@@ -1,12 +1,12 @@
-import { useMemo, useState } from 'react'
-import { MessageSquareText, PenLine, Route, Send } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { MessageSquareText, PenLine, Route, Send, Square } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { MessageList } from '@/components/Chat/MessageList'
 import type { ChatMessage } from '@/lib/api'
-import { sendInteractiveMessage } from '../api'
+import { abortInteractiveChat, sendInteractiveMessage } from '../api'
 import { createInteractiveNarrativeFilter } from '../stream-parser'
 import type { Snapshot } from '../types'
 
@@ -23,6 +23,7 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
   const [streaming, setStreaming] = useState(false)
   const [activityContent, setActivityContent] = useState('')
   const [liveMessages, setLiveMessages] = useState<ChatMessage[]>([])
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const historyMessages = useMemo<ChatMessage[]>(() => {
     return (snapshot?.turns || []).flatMap((turn) => [
@@ -52,9 +53,11 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
     setActivityContent('正在连接 AI Agent…')
     setLiveMessages([{ role: 'user', content: message }])
     setStreaming(true)
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
     const narrativeFilter = createInteractiveNarrativeFilter()
     try {
-      const stream = await sendInteractiveMessage({ mode: 'story', story_id: storyId, branch: branchId, message })
+      const stream = await sendInteractiveMessage({ mode: 'story', story_id: storyId, branch: branchId, message, signal: abortController.signal })
       const reader = stream.getReader()
       while (true) {
         const { done, value } = await reader.read()
@@ -117,13 +120,31 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
             setActivityContent('完成')
             break
           }
+          case 'aborted': {
+            const visible = narrativeFilter.flush()
+            if (visible) appendAssistantMessage(visible)
+            setActivityContent('已中断')
+            break
+          }
         }
       }
       await onDone()
+    } catch (error) {
+      if (!isAbortError(error)) {
+        setActivityContent('')
+        setLiveMessages((prev) => [...prev, { role: 'error', content: error instanceof Error ? error.message : '互动 Agent 执行失败' }])
+      }
     } finally {
       setStreaming(false)
+      abortControllerRef.current = null
       setActivityContent('')
     }
+  }
+
+  const stop = () => {
+    void abortInteractiveChat()
+    abortControllerRef.current?.abort()
+    setActivityContent('正在中断…')
   }
 
   return (
@@ -170,12 +191,20 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
             placeholder="你要做什么？"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) void send()
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void send()
+              }
             }}
           />
-          <Button className="h-16 w-24 bg-[#2d6fb8] hover:bg-[#347dca]" disabled={!storyId || streaming || !input.trim()} onClick={() => void send()}>
-            <Send className="h-4 w-4" />
-            {streaming ? '生成中' : '发送'}
+          <Button
+            className={`h-16 w-24 text-white ${streaming ? 'bg-[#c95050] hover:bg-[#e05d5d]' : 'bg-[#2d6fb8] hover:bg-[#347dca]'}`}
+            disabled={streaming ? false : (!storyId || !input.trim())}
+            onClick={() => { streaming ? stop() : void send() }}
+            aria-label={streaming ? '中断 AI 执行' : '发送'}
+          >
+            {streaming ? <Square className="h-4 w-4 fill-current" /> : <Send className="h-4 w-4" />}
+            {streaming ? '中断' : '发送'}
           </Button>
         </div>
       </div>
@@ -203,4 +232,8 @@ export function StoryStage({ storyId, branchId, snapshot, onDone }: StoryStagePr
       return [...prev, { role: 'thinking', content, streaming: true }]
     })
   }
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
 }

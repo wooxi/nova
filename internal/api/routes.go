@@ -37,6 +37,7 @@ func (s *Server) registerRoutes(h *hertzserver.Hertz) {
 		api.GET("/interactive/tellers", s.handleInteractiveTellers)
 		api.GET("/interactive/tellers/:id", s.handleInteractiveTeller)
 		api.POST("/interactive/chat", s.handleInteractiveChat)
+		api.POST("/interactive/chat/abort", s.handleInteractiveChatAbort)
 		api.POST("/chat", s.handleChat)
 		api.GET("/chat/stream", s.handleChatStream)
 		api.GET("/chat/active", s.handleChatActive)

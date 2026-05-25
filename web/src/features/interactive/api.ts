@@ -80,6 +80,10 @@ export async function sendInteractiveMessage(input: {
   return parseSSEStream(res.body)
 }
 
+export async function abortInteractiveChat(): Promise<void> {
+  await requestJSON('/api/interactive/chat/abort', { method: 'POST' })
+}
+
 function parseSSEStream(body: ReadableStream<Uint8Array>): ReadableStream<InteractiveSSEEvent> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
