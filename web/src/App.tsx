@@ -26,6 +26,8 @@ import {
   GitBranch,
   FolderTree,
   Home,
+  PanelLeft,
+  PanelRight,
   PenLine,
   RefreshCw,
   SearchCheck,
@@ -36,6 +38,8 @@ import {
 } from 'lucide-react'
 
 const PROJECT_VISIBLE_KEY = 'nova.layout.projectVisible'
+const INTERACTIVE_LEFT_VISIBLE_KEY = 'nova.layout.interactiveLeftVisible'
+const INTERACTIVE_RIGHT_VISIBLE_KEY = 'nova.layout.interactiveRightVisible'
 const TABS_STORAGE_PREFIX = 'nova.layout.tabs:'
 const ACTIVE_TAB_STORAGE_PREFIX = 'nova.layout.activeTab:'
 const APP_VERSION = __APP_VERSION__
@@ -148,6 +152,8 @@ function readActiveTabKeyFor(workspace: string): string | null {
 
 function App() {
   const [projectVisible, setProjectVisible] = useState(() => readLayoutBoolean(PROJECT_VISIBLE_KEY, true))
+  const [interactiveLeftVisible, setInteractiveLeftVisible] = useState(() => readLayoutBoolean(INTERACTIVE_LEFT_VISIBLE_KEY, true))
+  const [interactiveRightVisible, setInteractiveRightVisible] = useState(() => readLayoutBoolean(INTERACTIVE_RIGHT_VISIBLE_KEY, true))
   const [saveSignal, setSaveSignal] = useState(0)
   const [gitRefreshSignal, setGitRefreshSignal] = useState(0)
   const [openTabs, setOpenTabs] = useState<Tab[]>([])
@@ -255,6 +261,8 @@ function App() {
   }, [maxOpenTabs, activeTabKey, limitTabs])
 
   useEffect(() => { window.localStorage.setItem(PROJECT_VISIBLE_KEY, String(projectVisible)) }, [projectVisible])
+  useEffect(() => { window.localStorage.setItem(INTERACTIVE_LEFT_VISIBLE_KEY, String(interactiveLeftVisible)) }, [interactiveLeftVisible])
+  useEffect(() => { window.localStorage.setItem(INTERACTIVE_RIGHT_VISIBLE_KEY, String(interactiveRightVisible)) }, [interactiveRightVisible])
 
   // workspace 切换时从 localStorage 加载该 workspace 下的 tab 列表与激活项
   useEffect(() => {
@@ -490,8 +498,8 @@ function App() {
     </>
   )
 
-  const activityBar = (
-    <aside className="flex w-9 shrink-0 flex-col items-center border-r border-[#303238] bg-[#202124] py-2 text-[#7f8590]">
+  const ideActivityButtons = (
+    <>
       <TooltipIconButton
         label="主页（书籍管理）"
         onClick={openHomeTab}
@@ -520,6 +528,31 @@ function App() {
       >
         <GitBranch className="h-4 w-4" />
       </TooltipIconButton>
+    </>
+  )
+
+  const interactiveActivityButtons = (
+    <>
+      <TooltipIconButton
+        label="显示/隐藏互动资料库"
+        onClick={() => setInteractiveLeftVisible((value) => !value)}
+        className={`mb-4 hover:bg-[#303238] ${interactiveLeftVisible ? 'text-[#d7dbe2]' : 'text-[#6f7580]'}`}
+      >
+        <PanelLeft className="h-4 w-4" />
+      </TooltipIconButton>
+      <TooltipIconButton
+        label="显示/隐藏场景记忆"
+        onClick={() => setInteractiveRightVisible((value) => !value)}
+        className={`mb-4 hover:bg-[#303238] ${interactiveRightVisible ? 'text-[#d7dbe2]' : 'text-[#6f7580]'}`}
+      >
+        <PanelRight className="h-4 w-4" />
+      </TooltipIconButton>
+    </>
+  )
+
+  const activityBar = (
+    <aside className="flex w-9 shrink-0 flex-col items-center border-r border-[#303238] bg-[#202124] py-2 text-[#7f8590]">
+      {mode === 'ide' ? ideActivityButtons : interactiveActivityButtons}
       <TooltipIconButton
         label="设置"
         onClick={openSettingsTab}
@@ -604,6 +637,7 @@ function App() {
   )
 
   const activeTab = openTabs.find((t) => tabKey(t) === activeTabKey) ?? null
+  const settingsActive = activeTab?.kind === 'settings'
 
   const tabBar = (
     <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-[#303238] bg-[#202124] text-xs">
@@ -650,8 +684,11 @@ function App() {
 
   const main = (
     <main className="flex h-full min-w-0 flex-col border-r border-[#303238] bg-[#1b1c1f]">
-      {mode === 'interactive' ? (
-        <InteractiveLayout />
+      {mode === 'interactive' && !settingsActive ? (
+        <InteractiveLayout
+          leftPanelVisible={interactiveLeftVisible}
+          rightPanelVisible={interactiveRightVisible}
+        />
       ) : (
         <>
           {tabBar}

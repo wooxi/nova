@@ -18,6 +18,14 @@ describe('InteractiveLayout', () => {
     expect(screen.getByTestId('story-stage-card')).toHaveClass('rounded-xl')
   })
 
+  it('can hide interactive side panels independently', async () => {
+    render(<InteractiveLayout leftPanelVisible={false} rightPanelVisible={false} />)
+
+    expect(await screen.findByText('故事舞台 · 当前分支 main')).toBeInTheDocument()
+    expect(screen.queryByText('资料库')).not.toBeInTheDocument()
+    expect(screen.queryByText('场景记忆')).not.toBeInTheDocument()
+  })
+
   it('loads persisted turns from current story snapshot after refresh', async () => {
     useInteractiveStore.setState({
       stories: [],

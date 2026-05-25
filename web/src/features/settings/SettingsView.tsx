@@ -4,9 +4,12 @@ import type { LayeredSettings, Settings, SettingsLayer, StyleRule } from './type
 import { fetchSettings, updateUserSettings, updateWorkspaceSettings } from './api'
 import { getStyles } from '@/lib/api'
 
+type SettingsScope = 'ide' | 'interactive'
+
 export function SettingsView() {
   const [layered, setLayered] = useState<LayeredSettings | null>(null)
   const [activeLayer, setActiveLayer] = useState<SettingsLayer>('user')
+  const [activeScope, setActiveScope] = useState<SettingsScope>('ide')
   const [draft, setDraft] = useState<Settings>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -71,9 +74,24 @@ export function SettingsView() {
       <div className="flex h-9 items-center gap-1 border-b border-[#303238] bg-[#202124] px-3 text-xs">
         <span className="font-medium text-[#c5c9d1]">设置</span>
         <div className="ml-4 flex gap-1">
+          {(['ide', 'interactive'] as SettingsScope[]).map((scope) => (
+            <button
+              key={scope}
+              type="button"
+              onClick={() => setActiveScope(scope)}
+              className={`rounded px-2 py-0.5 ${
+                activeScope === scope ? 'bg-[#2f7dd3] text-white' : 'text-[#9aa0aa] hover:bg-[#303238]'
+              }`}
+            >
+              {scope === 'ide' ? 'IDE 模式' : '互动模式'}
+            </button>
+          ))}
+        </div>
+        <div className="ml-3 flex gap-1 border-l border-[#303238] pl-3">
           {(['user', 'workspace'] as SettingsLayer[]).map((l) => (
             <button
               key={l}
+              type="button"
               onClick={() => setActiveLayer(l)}
               className={`rounded px-2 py-0.5 ${
                 activeLayer === l ? 'bg-[#2f7dd3] text-white' : 'text-[#9aa0aa] hover:bg-[#303238]'
@@ -95,7 +113,7 @@ export function SettingsView() {
       {error && <div className="border-b border-red-500/40 bg-red-500/10 px-3 py-1 text-xs text-red-400">{error}</div>}
 
       <div className="flex-1 overflow-y-auto p-4 text-xs">
-        <Section title="模型">
+        <Section title="公共配置 · 模型">
           <Text label="API Key" value={draft.openai_api_key} placeholder={placeholderFor('openai_api_key')}
                 onChange={(v) => setField('openai_api_key', v)} type="password" />
           <Text label="Base URL" value={draft.openai_base_url} placeholder={placeholderFor('openai_base_url')}
@@ -104,7 +122,7 @@ export function SettingsView() {
                 onChange={(v) => setField('openai_model', v)} />
         </Section>
 
-        <Section title="路径">
+        <Section title="公共配置 · 路径">
           <Text label="Skills 目录" value={draft.skills_dir} placeholder={placeholderFor('skills_dir')}
                 onChange={(v) => setField('skills_dir', v)} />
           <ReadOnly label="Nova 数据目录" value={layered?.paths?.nova_dir} />
@@ -112,22 +130,7 @@ export function SettingsView() {
           <ReadOnly label="工作区配置文件" value={layered?.paths?.workspace_config} />
         </Section>
 
-        <Section title="编辑器">
-          <BoolTri label="自动保存" value={draft.auto_save_enabled ?? null}
-                   effective={effective.auto_save_enabled}
-                   onChange={(v) => setField('auto_save_enabled', v)} />
-          <Num label="自动保存间隔 (ms)" value={draft.auto_save_interval_ms ?? null}
-               placeholder={placeholderFor('auto_save_interval_ms')}
-               onChange={(v) => setField('auto_save_interval_ms', v)} />
-          <Text label="章节文件名模板" value={draft.chapter_filename_format}
-                placeholder={placeholderFor('chapter_filename_format')}
-                onChange={(v) => setField('chapter_filename_format', v)} />
-          <Num label="最大同时打开 Tab 数" value={draft.max_open_tabs ?? null}
-               placeholder={placeholderFor('max_open_tabs')}
-               onChange={(v) => setField('max_open_tabs', v)} />
-        </Section>
-
-        <Section title="Agent">
+        <Section title="公共配置 · Agent">
           <Num label="最大迭代轮数" value={draft.max_iteration ?? null}
                placeholder={placeholderFor('max_iteration')}
                onChange={(v) => setField('max_iteration', v)} />
@@ -139,14 +142,37 @@ export function SettingsView() {
                    onChange={(v) => setField('plan_mode_default', v)} />
         </Section>
 
-        {activeLayer === 'workspace' && (
-          <Section title="场景化风格规则">
-            <StyleRulesEditor
-              available={availableStyles}
-              rules={draft.style_rules ?? []}
-              effective={effective.style_rules ?? []}
-              onChange={(v) => setField('style_rules', v)}
-            />
+        {activeScope === 'ide' ? (
+          <>
+            <Section title="IDE 模式 · 编辑器">
+              <BoolTri label="自动保存" value={draft.auto_save_enabled ?? null}
+                       effective={effective.auto_save_enabled}
+                       onChange={(v) => setField('auto_save_enabled', v)} />
+              <Num label="自动保存间隔 (ms)" value={draft.auto_save_interval_ms ?? null}
+                   placeholder={placeholderFor('auto_save_interval_ms')}
+                   onChange={(v) => setField('auto_save_interval_ms', v)} />
+              <Text label="章节文件名模板" value={draft.chapter_filename_format}
+                    placeholder={placeholderFor('chapter_filename_format')}
+                    onChange={(v) => setField('chapter_filename_format', v)} />
+              <Num label="最大同时打开 Tab 数" value={draft.max_open_tabs ?? null}
+                   placeholder={placeholderFor('max_open_tabs')}
+                   onChange={(v) => setField('max_open_tabs', v)} />
+            </Section>
+
+            {activeLayer === 'workspace' && (
+              <Section title="IDE 模式 · 场景化风格规则">
+                <StyleRulesEditor
+                  available={availableStyles}
+                  rules={draft.style_rules ?? []}
+                  effective={effective.style_rules ?? []}
+                  onChange={(v) => setField('style_rules', v)}
+                />
+              </Section>
+            )}
+          </>
+        ) : (
+          <Section title="互动模式">
+            <ReadOnly label="专属配置" value="当前版本暂无互动模式专属配置；上方公共配置会同时作用于互动模式。" />
           </Section>
         )}
       </div>

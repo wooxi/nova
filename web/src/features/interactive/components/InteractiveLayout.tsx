@@ -12,7 +12,15 @@ import { StoryPicker } from './StoryPicker'
 import { StoryStage } from './StoryStage'
 import { TellerPicker } from './TellerPicker'
 
-export function InteractiveLayout() {
+interface InteractiveLayoutProps {
+  leftPanelVisible?: boolean
+  rightPanelVisible?: boolean
+}
+
+export function InteractiveLayout({
+  leftPanelVisible = true,
+  rightPanelVisible = true,
+}: InteractiveLayoutProps) {
   const {
     stories, tellers, branches, snapshot, currentStoryId, currentBranchId, submode,
     setStories, setTellers, setBranches, setSnapshot, setCurrentStoryId, setCurrentBranchId, setSubmode,
@@ -123,9 +131,9 @@ export function InteractiveLayout() {
           </Tabs>
         </div>
         <div className="flex min-h-0 flex-1">
-          <SettingPanel />
+          {leftPanelVisible && <SettingPanel />}
           <StoryStage storyId={currentStoryId} branchId={currentBranchId} snapshot={snapshot} onDone={reloadSnapshot} />
-          <SnapshotPanel snapshot={snapshot} />
+          {rightPanelVisible && <SnapshotPanel snapshot={snapshot} />}
         </div>
         <BranchTimeline snapshot={snapshot} branches={branches} currentBranchId={currentBranchId} onSwitchBranch={handleSwitchBranch} onCreateBranch={handleCreateBranch} />
       </div>
