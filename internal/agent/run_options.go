@@ -42,12 +42,12 @@ func (o RunOptions) normalized(defaultWorkspace string) RunOptions {
 func (o RunOptions) checkpointID(runID string) string {
 	parts := []string{strings.TrimSpace(o.AgentKind)}
 	switch {
-	case strings.TrimSpace(o.SessionID) != "":
-		parts = append(parts, "session", strings.TrimSpace(o.SessionID))
-	case strings.TrimSpace(o.TaskID) != "":
-		parts = append(parts, "task", strings.TrimSpace(o.TaskID))
 	case strings.TrimSpace(runID) != "":
 		parts = append(parts, "run", strings.TrimSpace(runID))
+	case strings.TrimSpace(o.TaskID) != "":
+		parts = append(parts, "task", strings.TrimSpace(o.TaskID))
+	case strings.TrimSpace(o.SessionID) != "":
+		parts = append(parts, "session", strings.TrimSpace(o.SessionID))
 	default:
 		return ""
 	}
